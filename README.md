@@ -9,6 +9,14 @@ set -e
 echo "Starting Maven project setup..."
 
 # Step 1: Install Java 11
+
+#!/bin/bash
+
+set -e
+
+echo "Starting installation of Java 11 and Maven..."
+
+# Install Java 17
 if ! java -version &>/dev/null; then
     echo "Installing Java 17..."
     sudo apt update
@@ -30,7 +38,17 @@ if ! grep -q "JAVA_HOME=$JAVA_HOME_PATH" /etc/environment; then
 else
     echo "JAVA_HOME is already set."
 fi
-================================================================================================================================================
+
+# Install Maven
+if ! mvn -version &>/dev/null; then
+    echo "Installing Maven..."
+    sudo apt install -y maven
+else
+    echo "Maven is already installed:"
+    mvn -version
+fi
+
+echo "Setup completed successfully."
 #!/bin/bash
 
 # Step 1: Set up Maven environment
@@ -117,6 +135,7 @@ jobs:
         uses: actions/setup-java@v3
         with:
           java-version: '11'
+          java-version: '17'
           distribution: 'temurin'
 
       # Cache Maven dependencies
