@@ -37,14 +37,7 @@ pipeline {
             }
         }
 
-        stage('Run JAR Locally') {
-            steps {
-                script {
-                    // Run the JAR file using java -jar
-                    sh "java -jar target/${JAR_FILE}"
-                }
-            }
-        }
+    
 
 stage('Push the artifacts into JFrog Artifactory') {
             steps {
@@ -73,7 +66,14 @@ stage('Push the artifacts into JFrog Artifactory') {
             }
         }
 
-
+    stage('Run JAR Locally') {
+            steps {
+                script {
+                    // Run the JAR file using java -jar
+                    sh "java -jar target/${JAR_FILE}"
+                }
+            }
+        }
 
 
         
