@@ -3,16 +3,20 @@ name: CI Build & Deploy (Tomcat + JFrog)
 
 on:
   push:
-    branches: [ "main" ]
-  workflow_dispatch:
+    branches:
+      - "main"          # ← change to your branch(s) as needed (e.g., "dev", "feature/*")
+  pull_request:
+    branches:
+      - "main"          # Optional: run on PRs too
+  workflow_dispatch:     # Optional: allows manual runs from the Actions tab
 
-# Enables OIDC (optional) for JFrog if you choose that auth method.
+# Enable OIDC for JFrog (optional), and allow build info publication
 permissions:
   contents: read
   id-token: write
 
+# Default values (can be overridden via Secrets/Variables)
 env:
-  # Default Tomcat webapps path (override via secrets if different)
   TOMCAT_DIR: /opt/tomcat10/webapps
 
 jobs:
@@ -20,11 +24,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # --- Checkout ---
+      # --- Checkout the repo ---
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # --- Java & Maven ---
+      # --- Java & Maven setup ---
       - name: Set up Java (Temurin 17) + Maven cache
         uses: actions/setup-java@v4
         with:
@@ -32,10 +36,11 @@ jobs:
           java-version: "17"
           cache: maven
 
+      # --- Build with Maven ---
       - name: Build with Maven
         run: mvn -B clean install
 
-      # --- Show target contents (for debugging) ---
+      # --- Show target folder contents (debugging aid) ---
       - name: Show contents of target/
         run: ls -l target
 
@@ -59,11 +64,11 @@ jobs:
           fi
           echo "Detected artifact: ${WAR}${JAR}"
 
-      # --- JFrog CLI setup ---
-      - name: Set up JFrog CLI (using secrets)
+      # --- JFrog CLI setup (using secrets) ---
+      - name: Set up JFrog CLI
         uses: jfrog/setup-jfrog-cli@v4
         env:
-          # Secrets you add in repo settings → Actions → Secrets
+          # Add these in Repo Settings → Secrets and variables → Actions
           JF_URL: ${{ secrets.JF_URL }}
           JF_ACCESS_TOKEN: ${{ secrets.JF_ACCESS_TOKEN }}
         # If you prefer OIDC instead of storing tokens, use:
@@ -72,6 +77,7 @@ jobs:
         # env:
         #   JF_URL: ${{ vars.JF_URL }}
 
+      # --- Upload artifact to Artifactory (time-stamped path) ---
       - name: Push artifact to JFrog Artifactory
         env:
           ARTIFACT_PATH: ${{ steps.artifact.outputs.path }}
@@ -81,7 +87,7 @@ jobs:
           targetPath="news_app1/${currentDate}/"
           echo "Uploading ${ARTIFACT_PATH} to ${targetPath}"
           jf rt upload --fail-no-op "${ARTIFACT_PATH}" "${targetPath}"
-          # Publish build-info (uses workflow name & run number)
+          # Publish build-info (uses workflow name & run number automatically)
           jf rt build-publish
 
       # --- Optional local run only for JARs ---
@@ -90,7 +96,7 @@ jobs:
         run: |
           java -jar "${{ steps.artifact.outputs.path }}"
 
-      # --- Prepare SSH for Tomcat deploy ---
+      # --- Prepare SSH (key + known_hosts) for target server ---
       - name: Prepare SSH key and known_hosts
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
@@ -118,6 +124,10 @@ jobs:
           TOMCAT_HOST: ${{ secrets.TOMCAT_HOST }}
           TOMCAT_USER: ${{ secrets.TOMCAT_USER }}
         run: |
-          # If your repo includes restart-tomcat.sh, copy & run it; else fall back to systemctl
-          scp -i ~/.ssh/deploy_key ./restart-tomcat.sh "${TOMCAT_USER}@${TOMCAT_HOST}:~/restart-tomcat.sh" || true
-          ssh -i ~/.ssh/deploy_key "${TOMCAT_USER}@${TOMCAT_HOST}" 'bash ~/restart-tomcat.sh || sudo systemctl restart tomcat'
+          # If restart-tomcat.sh exists in repo, copy & run it; else try systemctl
+          if [ -f ./restart-tomcat.sh ]; then
+            scp -i ~/.ssh/deploy_key ./restart-tomcat.sh "${TOMCAT_USER}@${TOMCAT_HOST}:~/restart-tomcat.sh"
+            ssh -i ~/.ssh/deploy_key "${TOMCAT_USER}@${TOMCAT_HOST}" 'bash ~/restart-tomcat.sh'
+          else
+            ssh -i ~/.ssh/deploy_key "${TOMCAT_USER}@${TOMCAT_HOST}" 'sudo systemctl restart tomcat || sudo systemctl restart tomcat10 || sudo service tomcat restart'
+          fi
