@@ -129,4 +129,4 @@ jobs:
             ssh -i ~/.ssh/deploy_key "${TOMCAT_USER}@${TOMCAT_HOST}" 'bash ~/restart-tomcat.sh'
           else
             ssh -i ~/.ssh/deploy_key "${TOMCAT_USER}@${TOMCAT_HOST}" 'sudo systemctl restart tomcat || sudo systemctl restart tomcat10 || sudo service tomcat restart'
-     
+          fi
