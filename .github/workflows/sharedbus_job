@@ -1,0 +1,123 @@
+
+name: CI Build & Deploy (Tomcat + JFrog)
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+# Enables OIDC (optional) for JFrog if you choose that auth method.
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  # Default Tomcat webapps path (override via secrets if different)
+  TOMCAT_DIR: /opt/tomcat10/webapps
+
+jobs:
+  build-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # --- Checkout ---
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # --- Java & Maven ---
+      - name: Set up Java (Temurin 17) + Maven cache
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+
+      - name: Build with Maven
+        run: mvn -B clean install
+
+      # --- Show target contents (for debugging) ---
+      - name: Show contents of target/
+        run: ls -l target
+
+      # --- Detect built artifact (.war or .jar) ---
+      - name: Determine artifact path
+        id: artifact
+        shell: bash
+        run: |
+          set -e
+          WAR=$(ls target/*.war 2>/dev/null || true)
+          JAR=$(ls target/*.jar 2>/dev/null || true)
+          if [ -n "$WAR" ]; then
+            echo "path=$WAR" >> "$GITHUB_OUTPUT"
+            echo "type=war" >> "$GITHUB_OUTPUT"
+          elif [ -n "$JAR" ]; then
+            echo "path=$JAR" >> "$GITHUB_OUTPUT"
+            echo "type=jar" >> "$GITHUB_OUTPUT"
+          else
+            echo "No WAR or JAR found in target/"
+            exit 1
+          fi
+          echo "Detected artifact: ${WAR}${JAR}"
+
+      # --- JFrog CLI setup ---
+      - name: Set up JFrog CLI (using secrets)
+        uses: jfrog/setup-jfrog-cli@v4
+        env:
+          # Secrets you add in repo settings → Actions → Secrets
+          JF_URL: ${{ secrets.JF_URL }}
+          JF_ACCESS_TOKEN: ${{ secrets.JF_ACCESS_TOKEN }}
+        # If you prefer OIDC instead of storing tokens, use:
+        # with:
+        #   oidc-provider-name: ${{ vars.JF_OIDC_PROVIDER_NAME }}
+        # env:
+        #   JF_URL: ${{ vars.JF_URL }}
+
+      - name: Push artifact to JFrog Artifactory
+        env:
+          ARTIFACT_PATH: ${{ steps.artifact.outputs.path }}
+        run: |
+          set -e
+          currentDate=$(date +"%Y-%m-%d_%H-%M")
+          targetPath="news_app1/${currentDate}/"
+          echo "Uploading ${ARTIFACT_PATH} to ${targetPath}"
+          jf rt upload --fail-no-op "${ARTIFACT_PATH}" "${targetPath}"
+          # Publish build-info (uses workflow name & run number)
+          jf rt build-publish
+
+      # --- Optional local run only for JARs ---
+      - name: Run JAR locally (skip if WAR)
+        if: steps.artifact.outputs.type == 'jar'
+        run: |
+          java -jar "${{ steps.artifact.outputs.path }}"
+
+      # --- Prepare SSH for Tomcat deploy ---
+      - name: Prepare SSH key and known_hosts
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          TOMCAT_HOST: ${{ secrets.TOMCAT_HOST }}
+        run: |
+          set -e
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$TOMCAT_HOST" >> ~/.ssh/known_hosts
+
+      # --- Copy artifact to Tomcat webapps ---
+      - name: Copy artifact to Tomcat
+        env:
+          TOMCAT_HOST: ${{ secrets.TOMCAT_HOST }}
+          TOMCAT_USER: ${{ secrets.TOMCAT_USER }}
+          TOMCAT_DIR: ${{ secrets.TOMCAT_DIR }}
+          ARTIFACT_PATH: ${{ steps.artifact.outputs.path }}
+        run: |
+          scp -i ~/.ssh/deploy_key "${ARTIFACT_PATH}" "${TOMCAT_USER}@${TOMCAT_HOST}:${TOMCAT_DIR}/"
+
+      # --- Restart Tomcat ---
+      - name: Restart Tomcat remotely
+        env:
+          TOMCAT_HOST: ${{ secrets.TOMCAT_HOST }}
+          TOMCAT_USER: ${{ secrets.TOMCAT_USER }}
+        run: |
+          # If your repo includes restart-tomcat.sh, copy & run it; else fall back to systemctl
+          scp -i ~/.ssh/deploy_key ./restart-tomcat.sh "${TOMCAT_USER}@${TOMCAT_HOST}:~/restart-tomcat.sh" || true
+          ssh -i ~/.ssh/deploy_key "${TOMCAT_USER}@${TOMCAT_HOST}" 'bash ~/restart-tomcat.sh || sudo systemctl restart tomcat'
